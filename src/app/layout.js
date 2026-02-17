@@ -1,8 +1,8 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "Phish Finder — AI-Powered Show Recommendations",
-  description: "Find the perfect Phish show by vibe, energy, era, and more. Powered by Phish.net data and Claude AI.",
+  title: "The Helping Phriendly Book — Find Your Phish Show",
+  description: "Step into the freezer and find a show. Browse every Phish show by vibe, energy, style, era, and more. Powered by Phish.net data and Claude AI.",
 };
 
 export default function RootLayout({ children }) {
