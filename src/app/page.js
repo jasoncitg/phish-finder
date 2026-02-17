@@ -154,84 +154,40 @@ function ShowCard({ show, expanded, onToggle }) {
   );
 }
 
-// ─── Setlist Enrichment (calls our backend which calls phish.net) ────────────
-function EnrichPanel({ liveShows, onEnriched }) {
-  const [enriching, setEnriching] = useState(false);
-  const [progress, setProgress] = useState("");
-  const [done, setDone] = useState(false);
-
-  const unenriched = liveShows.filter(s => (!s.songs || !s.songs.length) && s.source === "live");
-  if (!unenriched.length && !done) return null;
-
-  const enrich = async () => {
-    setEnriching(true); setDone(false);
-    const top = [...unenriched].sort((a,b) => b.rating - a.rating).slice(0, 40);
-    const results = [];
-    for (let i = 0; i < top.length; i++) {
-      setProgress(`Fetching setlist ${i+1}/${top.length}: ${top[i].date}`);
-      try {
-        const resp = await fetch(`/api/setlists?date=${top[i].date}`);
-        const data = await resp.json();
-        if (data.songs) {
-          const songNames = data.songs.map(s => s.song).filter(Boolean);
-          const jamChartSongs = data.songs.filter(s => s.isjamchart === "1");
-          const notableJams = jamChartSongs.map(s => {
-            const desc = s.jamchart_description ? ` — ${s.jamchart_description.slice(0,60)}` : "";
-            return `${s.song}${desc}`;
-          });
-          results.push({
-            ...top[i],
-            songs: [...new Set(songNames)],
-            jamCharts: jamChartSongs.length,
-            notableJams,
-            features: [
-              ...top[i].features,
-              ...(jamChartSongs.length >= 4 ? ["marathon-jams"] : []),
-            ],
-          });
-        }
-      } catch (err) { results.push(top[i]); }
-      if (i > 0 && i % 3 === 0) await new Promise(r => setTimeout(r, 200));
-    }
-    onEnriched(results);
-    setProgress(""); setEnriching(false); setDone(true);
-  };
-
-  return (
-    <div style={{ marginBottom:16, padding:12, background:"#4ecdc411", border:"1px solid #4ecdc433", borderRadius:10, display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
-      <div style={{ flex:1, minWidth:200 }}>
-        <div style={{ fontSize:13, color:"#4ecdc4", fontWeight:600 }}>{done ? "Setlists loaded!" : `${unenriched.length} shows need setlist data`}</div>
-        {progress && <div style={{ fontSize:11, color:"#888", marginTop:2, animation:"pulse 1s infinite" }}>{progress}</div>}
-        {!done && !enriching && <div style={{ fontSize:11, color:"#888", marginTop:2 }}>Fetch setlists and jam chart data for the top-rated loaded shows.</div>}
-      </div>
-      {!done && <button onClick={enrich} disabled={enriching} style={{
-        padding:"8px 18px", borderRadius:8, border:"none",
-        background: enriching ? "#444" : "linear-gradient(135deg, #4ecdc4, #3b82f6)",
-        color:"#fff", fontWeight:600, fontSize:13, cursor: enriching?"wait":"pointer", whiteSpace:"nowrap",
-      }}>{enriching ? "Fetching..." : "Load Setlists"}</button>}
-    </div>
-  );
-}
-
 // ─── AI Search ──────────────────────────────────────────────────────────────
-function AiSearch({ shows, onResults }) {
+function AiSearch({ shows, onResults, currentFilters }) {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState("");
 
+  // Build an auto-query from current filter state when no text is typed
+  const buildAutoQuery = () => {
+    const parts = [];
+    if (currentFilters.eras.length) parts.push(`era ${currentFilters.eras.join(" or ")}`);
+    if (currentFilters.vibes.length) parts.push(`${currentFilters.vibes.join(", ")} vibes`);
+    if (currentFilters.energyLevels.length) parts.push(`${currentFilters.energyLevels.map(e => ENERGY_LEVELS.find(el => el.value === e)?.label || e).join(" or ")} energy`);
+    if (currentFilters.styles.length) parts.push(`${currentFilters.styles.map(s => STYLES.find(st => st.value === s)?.label || s).join(" or ")} style`);
+    if (currentFilters.features.length) parts.push(`${currentFilters.features.join(", ")}`);
+    if (currentFilters.minRating > 0) parts.push(`min rating ${currentFilters.minRating.toFixed(1)}`);
+    if (currentFilters.minJamCharts > 0) parts.push(`${currentFilters.minJamCharts}+ jam charts`);
+    if (currentFilters.yearRange[0] !== 1983 || currentFilters.yearRange[1] !== 2026) parts.push(`years ${currentFilters.yearRange[0]}-${currentFilters.yearRange[1]}`);
+    if (currentFilters.songSearch.trim()) parts.push(`featuring "${currentFilters.songSearch.trim()}"`);
+    return parts.length ? `recommend the best Phish shows with ${parts.join(", ")}` : "recommend the top overall Phish shows, the true must-hear nights";
+  };
+
   const search = async () => {
-    if (!query.trim()) return;
+    const effectiveQuery = query.trim() || buildAutoQuery();
     setLoading(true); setResponse("");
     try {
-      const summaries = shows.slice(0, 200).map(s =>
-        `${s.date}|${s.venue},${s.city}|Era${s.era}|R${s.rating}|E${s.energy}|V:${(s.vibes||[]).join(",")}|F:${(s.features||[]).join(",")}|S:${(s.songs||[]).slice(0,6).join(",")}|${(s.notableJams||[]).join(",")}|${s.description||""}`
+      const summaries = shows.slice(0, 300).map(s =>
+        `${s.date}|${s.venue},${s.city}|Era${s.era}|R${s.rating}|E${s.energy}|V:${(s.vibes||[]).join(",")}|F:${(s.features||[]).join(",")}|S:${(s.songs||[]).slice(0,8).join(",")}|${(s.notableJams||[]).join(",")}|${s.description||""}`
       ).join("\n");
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514", max_tokens: 1000,
-          messages: [{ role: "user", content: `You are a Phish show expert. Given this database and query, return JSON with: "dates" (array of up to 12 YYYY-MM-DD dates ordered by relevance) and "explanation" (2-3 enthusiastic sentences). DATABASE (${shows.length} shows):\n${summaries}\n\nQUERY: "${query}"\n\nReturn ONLY valid JSON, no backticks.` }]
+          messages: [{ role: "user", content: `You are a Phish show expert. Given this database and query, return JSON with: "dates" (array of up to 12 YYYY-MM-DD dates ordered by relevance) and "explanation" (2-3 enthusiastic sentences). DATABASE (${shows.length} shows):\n${summaries}\n\nQUERY: "${effectiveQuery}"\n\nReturn ONLY valid JSON, no backticks.` }]
         })
       });
       const data = await resp.json();
@@ -243,17 +199,23 @@ function AiSearch({ shows, onResults }) {
     setLoading(false);
   };
 
+  const hasFilters = currentFilters.eras.length || currentFilters.vibes.length || currentFilters.energyLevels.length || currentFilters.styles.length || currentFilters.features.length || currentFilters.minRating > 0 || currentFilters.minJamCharts > 0 || (currentFilters.yearRange[0] !== 1983 || currentFilters.yearRange[1] !== 2026) || currentFilters.songSearch.trim();
+  const btnLabel = loading ? "Thinking..." : (query.trim() ? "Ask Claude" : hasFilters ? "Ask Claude About These Filters" : "Ask Claude to Recommend Shows");
+
   return (
     <div style={{ marginBottom:20 }}>
+      <div style={{ fontSize:11, color:"#888", fontWeight:600, marginBottom:8, textTransform:"uppercase", letterSpacing:1 }}>
+        Ask Claude <span style={{ color:"#555", fontWeight:400, textTransform:"none", letterSpacing:0 }}>— type a question or just click the button to use your current filters</span>
+      </div>
       <div style={{ display:"flex", gap:8 }}>
         <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => e.key==="Enter" && search()}
-          placeholder='Ask Claude: "dark funky 97 shows" or "best NYE with marathon jams"'
-          style={{ flex:1, padding:"12px 16px", borderRadius:10, border:"1px solid #333", background:"#0d0d1a", color:"#eee", fontSize:14, outline:"none" }} />
+          placeholder='Optional: "dark funky 97" · "best NYE with marathon jams" · or just click the button →'
+          style={{ flex:1, padding:"12px 16px", borderRadius:10, border:"1px solid #333", background:"#0d0d1a", color:"#eee", fontSize:13, outline:"none" }} />
         <button onClick={search} disabled={loading} style={{
-          padding:"12px 24px", borderRadius:10, border:"none",
+          padding:"12px 20px", borderRadius:10, border:"none",
           background: loading ? "#444" : "linear-gradient(135deg, #e8a849, #d4783a)",
-          color:"#111", fontWeight:700, fontSize:14, cursor:loading?"wait":"pointer", whiteSpace:"nowrap",
-        }}>{loading ? "Thinking..." : "Ask Claude"}</button>
+          color:"#111", fontWeight:700, fontSize:13, cursor:loading?"wait":"pointer", whiteSpace:"nowrap",
+        }}>{btnLabel}</button>
       </div>
       {response && <div style={{ marginTop:10, padding:12, borderRadius:10, background:"#e8a84911", border:"1px solid #e8a84933", color:"#e8a849", fontSize:13, lineHeight:1.5 }}>{response}</div>}
     </div>
@@ -266,26 +228,34 @@ function AiSearch({ shows, onResults }) {
 export default function HelpingPhriendlyBook() {
   const [liveShows, setLiveShows] = useState([]);
   const [loadedYears, setLoadedYears] = useState(new Set());
+  // Phase 1: loading year/show metadata
   const [autoLoading, setAutoLoading] = useState(true);
   const [loadProgress, setLoadProgress] = useState("Warming up the freezer...");
   const [loadError, setLoadError] = useState("");
+  // Phase 2: enriching setlists in background
+  const [enriching, setEnriching] = useState(false);
+  const [enrichDone, setEnrichDone] = useState(0);
+  const [enrichTotal, setEnrichTotal] = useState(0);
   const loadStarted = useRef(false);
 
-  // Auto-load all years on mount
+  const TOTAL_YEARS = 44; // 1983-2026 inclusive
+
   useEffect(() => {
     if (loadStarted.current) return;
     loadStarted.current = true;
 
-    const loadAllYears = async () => {
+    const run = async () => {
+      // ── Phase 1: load all show metadata ──────────────────────────────────
       const allYears = [];
       for (let y = 1983; y <= 2026; y++) allYears.push(y);
 
-      const batchSize = 5;
+      const allLoadedShows = []; // keep a local copy for phase 2
       let failCount = 0;
+      const YEAR_BATCH = 5;
 
-      for (let i = 0; i < allYears.length; i += batchSize) {
-        const batch = allYears.slice(i, i + batchSize);
-        setLoadProgress(`Loading ${batch[0]}-${batch[batch.length-1]}... (${Math.min(i + batchSize, allYears.length)}/${allYears.length} years)`);
+      for (let i = 0; i < allYears.length; i += YEAR_BATCH) {
+        const batch = allYears.slice(i, i + YEAR_BATCH);
+        setLoadProgress(`Fetching ${batch[0]}-${batch[batch.length-1]}... (${Math.min(i + YEAR_BATCH, allYears.length)}/${allYears.length} years)`);
 
         const results = await Promise.all(batch.map(async (y) => {
           try {
@@ -296,8 +266,7 @@ export default function HelpingPhriendlyBook() {
               date: s.date, venue: s.venue, city: s.city, state: s.state,
               era: getEra(s.date), rating: s.rating, reviews: s.reviews,
               jamCharts: 0, energy: 0, vibes: [], energyLevel: [], style: [],
-              features:
-                (s.date?.includes("-10-31") ? ["halloween"] : []).concat(s.date?.includes("-12-31") ? ["nye"] : []),
+              features: (s.date?.includes("-10-31") ? ["halloween"] : []).concat(s.date?.includes("-12-31") ? ["nye"] : []),
               notableJams: [], songs: [], description: "", source: "live",
             }))};
           } catch {
@@ -307,31 +276,79 @@ export default function HelpingPhriendlyBook() {
         }));
 
         const batchShows = results.flatMap(r => r.shows);
-        const batchYears = results.map(r => r.year);
+        allLoadedShows.push(...batchShows);
 
         setLiveShows(prev => {
           const existing = new Set(prev.map(s => s.date));
           return [...prev, ...batchShows.filter(s => !existing.has(s.date))];
         });
-        setLoadedYears(prev => new Set([...prev, ...batchYears]));
+        setLoadedYears(prev => new Set([...prev, ...results.map(r => r.year)]));
       }
 
-      if (failCount > 0) {
-        setLoadError(`${failCount} year(s) failed to load. Shows from those years may be missing.`);
-      }
+      if (failCount > 0) setLoadError(`${failCount} year(s) failed to load.`);
       setAutoLoading(false);
-      setLoadProgress("");
+
+      // ── Phase 2: enrich all live shows with setlist data ──────────────────
+      const curatedDates = new Set(CURATED.map(s => s.date));
+      // Sort by rating desc so the best shows get setlists first
+      const toEnrich = allLoadedShows
+        .filter(s => !curatedDates.has(s.date))
+        .sort((a, b) => (b.rating || 0) - (a.rating || 0));
+
+      if (!toEnrich.length) return;
+      setEnrichTotal(toEnrich.length);
+      setEnriching(true);
+
+      const SL_BATCH = 5;
+      for (let i = 0; i < toEnrich.length; i += SL_BATCH) {
+        const chunk = toEnrich.slice(i, i + SL_BATCH);
+        setEnrichDone(i);
+
+        const enriched = await Promise.all(chunk.map(async (show) => {
+          try {
+            const resp = await fetch(`/api/setlists?date=${show.date}`);
+            const data = await resp.json();
+            if (!data.songs) return null;
+            const songNames = [...new Set(data.songs.map(s => s.song).filter(Boolean))];
+            const jc = data.songs.filter(s => s.isjamchart === "1");
+            const notableJams = jc.map(s => s.song + (s.jamchart_description ? ` — ${s.jamchart_description.slice(0,60)}` : ""));
+            return {
+              date: show.date,
+              songs: songNames,
+              jamCharts: jc.length,
+              notableJams,
+              features: [...show.features, ...(jc.length >= 4 ? ["marathon-jams"] : [])],
+            };
+          } catch { return null; }
+        }));
+
+        const valid = enriched.filter(Boolean);
+        if (valid.length) {
+          setLiveShows(prev => {
+            const updated = [...prev];
+            valid.forEach(es => {
+              const idx = updated.findIndex(s => s.date === es.date);
+              if (idx >= 0) updated[idx] = { ...updated[idx], ...es };
+            });
+            return updated;
+          });
+        }
+
+        // Polite rate-limiting
+        await new Promise(r => setTimeout(r, 100));
+      }
+
+      setEnrichDone(toEnrich.length);
+      setEnriching(false);
     };
 
-    loadAllYears();
+    run();
   }, []);
 
   const allShows = useMemo(() => {
     const curatedDates = new Set(CURATED.map(s => s.date));
     const combined = [...CURATED];
-    liveShows.forEach(ls => {
-      if (!curatedDates.has(ls.date)) combined.push(ls);
-    });
+    liveShows.forEach(ls => { if (!curatedDates.has(ls.date)) combined.push(ls); });
     return combined;
   }, [liveShows]);
 
@@ -352,15 +369,10 @@ export default function HelpingPhriendlyBook() {
 
   const toggle = (arr, setArr, val) => { setAiDates(null); setArr(arr.includes(val) ? arr.filter(v => v !== val) : [...arr, val]); };
 
-  const handleEnriched = (enriched) => {
-    setLiveShows(prev => {
-      const updated = [...prev];
-      enriched.forEach(es => {
-        const idx = updated.findIndex(s => s.date === es.date);
-        if (idx >= 0) updated[idx] = { ...updated[idx], ...es };
-      });
-      return updated;
-    });
+  const currentFilters = {
+    eras: selectedEras, vibes: selectedVibes, energyLevels: selectedEnergyLevels,
+    styles: selectedStyles, features: selectedFeatures, yearRange,
+    minRating, minJamCharts, songSearch,
   };
 
   const filtered = useMemo(() => {
@@ -384,9 +396,12 @@ export default function HelpingPhriendlyBook() {
   const clearAll = () => { setSelectedEras([]); setSelectedVibes([]); setSelectedEnergyLevels([]); setSelectedStyles([]); setSelectedFeatures([]); setYearRange([1983,2026]); setMinRating(0); setMinJamCharts(0); setMinEnergy(0); setSongSearch(""); setAiDates(null); };
   const hasFilters = selectedEras.length || selectedVibes.length || selectedEnergyLevels.length || selectedStyles.length || selectedFeatures.length || yearRange[0]!==1983 || yearRange[1]!==2026 || minRating>0 || minJamCharts>0 || minEnergy>0 || songSearch || aiDates;
 
+  const enrichPct = enrichTotal > 0 ? Math.round((enrichDone / enrichTotal) * 100) : 0;
+
   return (
     <div style={{ minHeight:"100vh" }}>
       <div style={{ padding:"24px 24px 0", maxWidth:1000, margin:"0 auto" }}>
+
         {/* Header */}
         <div style={{ textAlign:"center", marginBottom:20 }}>
           <h1 style={{ fontFamily:"'Space Mono',monospace", fontSize:28, fontWeight:700, margin:0, background:"linear-gradient(135deg, #e8a849, #d4783a, #e8a849)", WebkitBackgroundClip:"text", WebkitTextFillColor:"transparent", animation:"glow 3s ease-in-out infinite" }}>THE HELPING PHRIENDLY BOOK</h1>
@@ -394,35 +409,42 @@ export default function HelpingPhriendlyBook() {
           <p style={{ color:"#888", fontSize:12, marginTop:6 }}>{allShows.length} shows loaded · Powered by Phish.net API</p>
         </div>
 
-        {/* Auto-Load Progress */}
+        {/* Phase 1: Year loading progress */}
         {autoLoading && (
           <div style={{ marginBottom:16, padding:14, background:"#111122", border:"1px solid #1e1e30", borderRadius:10 }}>
             <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-              <div style={{ width:20, height:20, border:"3px solid #e8a84933", borderTopColor:"#e8a849", borderRadius:"50%", animation:"spin 0.8s linear infinite" }} />
-              <div>
+              <div style={{ width:20, height:20, border:"3px solid #e8a84933", borderTopColor:"#e8a849", borderRadius:"50%", flexShrink:0, animation:"spin 0.8s linear infinite" }} />
+              <div style={{ flex:1 }}>
                 <div style={{ fontSize:13, color:"#e8a849", fontWeight:600 }}>Loading all Phish shows from Phish.net...</div>
                 <div style={{ fontSize:11, color:"#888", marginTop:2, animation:"pulse 1s infinite" }}>{loadProgress}</div>
               </div>
-              <div style={{ marginLeft:"auto", fontFamily:"'Space Mono',monospace", fontSize:13, color:"#4ecdc4" }}>{loadedYears.size} / 44 years</div>
+              <div style={{ fontFamily:"'Space Mono',monospace", fontSize:13, color:"#4ecdc4", whiteSpace:"nowrap" }}>{loadedYears.size} / {TOTAL_YEARS} yrs</div>
             </div>
             <div style={{ marginTop:10, height:4, background:"#1e1e30", borderRadius:2, overflow:"hidden" }}>
-              <div style={{ height:"100%", background:"linear-gradient(90deg, #e8a849, #d4783a)", borderRadius:2, transition:"width 0.3s", width:`${(loadedYears.size / 44) * 100}%` }} />
+              <div style={{ height:"100%", background:"linear-gradient(90deg, #e8a849, #d4783a)", borderRadius:2, transition:"width 0.3s", width:`${(loadedYears.size / TOTAL_YEARS) * 100}%` }} />
             </div>
           </div>
         )}
-        {!autoLoading && loadError && (
-          <div style={{ marginBottom:16, padding:10, borderRadius:8, background:"#ff444411", border:"1px solid #ff444433", color:"#ff4444", fontSize:12 }}>{loadError}</div>
+
+        {/* Phase 2: Setlist enrichment (background, non-blocking) */}
+        {!autoLoading && enriching && (
+          <div style={{ marginBottom:16, padding:12, background:"#111122", border:"1px solid #1e1e30", borderRadius:10 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+              <div style={{ width:14, height:14, border:"2px solid #4ecdc433", borderTopColor:"#4ecdc4", borderRadius:"50%", flexShrink:0, animation:"spin 0.8s linear infinite" }} />
+              <div style={{ flex:1, fontSize:12, color:"#4ecdc4" }}>Loading setlists in background... {enrichDone}/{enrichTotal} shows</div>
+              <div style={{ fontSize:11, color:"#888", whiteSpace:"nowrap" }}>{enrichPct}%</div>
+            </div>
+            <div style={{ marginTop:8, height:3, background:"#1e1e30", borderRadius:2, overflow:"hidden" }}>
+              <div style={{ height:"100%", background:"linear-gradient(90deg, #4ecdc4, #3b82f6)", borderRadius:2, transition:"width 0.3s", width:`${enrichPct}%` }} />
+            </div>
+          </div>
         )}
 
-        {/* Enrich */}
-        {!autoLoading && <EnrichPanel liveShows={liveShows} onEnriched={handleEnriched} />}
-
-        {/* AI Search */}
-        <AiSearch shows={allShows} onResults={(dates) => { setAiDates(dates); setExpandedShow(null); }} />
+        {loadError && <div style={{ marginBottom:12, padding:10, borderRadius:8, background:"#ff444411", border:"1px solid #ff444433", color:"#ff4444", fontSize:12 }}>{loadError}</div>}
 
         {/* Filter Toggle */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-          <button onClick={() => setShowFilters(!showFilters)} style={{ background:"none", border:"1px solid #333", color:"#999", padding:"6px 14px", borderRadius:8, fontSize:12, cursor:"pointer" }}>{showFilters ? "Hide Filters" : "Show Filters"}</button>
+          <button onClick={() => setShowFilters(!showFilters)} style={{ background:"none", border:"1px solid #333", color:"#999", padding:"6px 14px", borderRadius:8, fontSize:12, cursor:"pointer" }}>{showFilters ? "▾ Hide Filters" : "▸ Show Filters"}</button>
           {hasFilters && <button onClick={clearAll} style={{ background:"none", border:"1px solid #e8a84933", color:"#e8a849", padding:"6px 14px", borderRadius:8, fontSize:12, cursor:"pointer" }}>Clear All</button>}
         </div>
 
@@ -478,11 +500,19 @@ export default function HelpingPhriendlyBook() {
           </div>
         )}
 
+        {/* AI Search — below filters so filters set context, then Claude refines */}
+        <AiSearch
+          shows={allShows}
+          currentFilters={currentFilters}
+          onResults={(dates) => { setAiDates(dates); setExpandedShow(null); }}
+        />
+
         {/* Sort + Count */}
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:8 }}>
           <div style={{ color:"#888", fontSize:13 }}>
-            {aiDates ? <span><span style={{ color:"#e8a849" }}>AI Results</span> · {filtered.length} show{filtered.length!==1?"s":""}</span>
-            : <span><span style={{ color:"#e8a849", fontWeight:600 }}>{filtered.length}</span> show{filtered.length!==1?"s":""}</span>}
+            {aiDates
+              ? <span><span style={{ color:"#e8a849" }}>Claude's Picks</span> · {filtered.length} show{filtered.length!==1?"s":""} <button onClick={() => setAiDates(null)} style={{ marginLeft:8, background:"none", border:"1px solid #444", color:"#888", padding:"2px 8px", borderRadius:6, fontSize:11, cursor:"pointer" }}>✕ clear</button></span>
+              : <span><span style={{ color:"#e8a849", fontWeight:600 }}>{filtered.length}</span> show{filtered.length!==1?"s":""}</span>}
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
             <span style={{ fontSize:11, color:"#888", textTransform:"uppercase", letterSpacing:1 }}>Sort:</span>
