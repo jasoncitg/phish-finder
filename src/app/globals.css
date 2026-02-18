@@ -5,60 +5,53 @@
 }
 
 body {
-  background: #0a0a14;
-  color: #eee;
+  background: #020d14;
+  color: #e2e8f0;
   font-family: "DM Sans", sans-serif;
   min-height: 100vh;
 }
 
-::selection {
-  background: #e8a84944;
-}
+::selection { background: #0891b244; }
 
-::-webkit-scrollbar {
-  width: 6px;
-}
-::-webkit-scrollbar-track {
-  background: #0a0a14;
-}
-::-webkit-scrollbar-thumb {
-  background: #333;
-  border-radius: 3px;
-}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #020d14; }
+::-webkit-scrollbar-thumb { background: #1e3a4a; border-radius: 3px; }
 
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(-6px); }
-  to { opacity: 1; transform: translateY(0); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes glow {
-  0%, 100% { text-shadow: 0 0 20px #e8a84944; }
-  50% { text-shadow: 0 0 40px #e8a84966, 0 0 60px #d4783a33; }
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
+
+@keyframes waterGlow {
+  0%, 100% { text-shadow: 0 0 30px #06b6d444, 0 0 60px #0891b222; }
+  50%       { text-shadow: 0 0 50px #2dd4bf66, 0 0 90px #06b6d433; }
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
 
 @keyframes pulse {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
+  0%, 100% { opacity: 0.5; }
+  50%       { opacity: 1; }
 }
 
 input[type="range"] {
   -webkit-appearance: none;
   height: 4px;
-  background: #333;
+  background: #1e3a4a;
   border-radius: 2px;
   outline: none;
   width: 100%;
 }
-
 input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 16px;
   height: 16px;
-  background: #e8a849;
+  background: #2dd4bf;
   border-radius: 50%;
   cursor: pointer;
 }
