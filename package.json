@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:data": "node scripts/build-shows.js",
     "start": "next start"
   },
   "dependencies": {

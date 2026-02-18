@@ -62,6 +62,64 @@ function getEra(d) {
   return y <= 2000 ? "1.0" : y <= 2004 ? "2.0" : y <= 2020 ? "3.0" : "4.0";
 }
 
+// Derive vibes/energy/style for any show from rating, jamCharts, and date.
+// Used for live shows that lack hand-curated metadata.
+function deriveShowMetadata(date, rating, jamCharts) {
+  const year = parseInt(date.substring(0, 4));
+  const r = rating || 0;
+  const jc = jamCharts || 0;
+
+  // Energy score 1-5
+  let energy = 0;
+  if (r >= 4.7) energy = 5;
+  else if (r >= 4.5) energy = 4;
+  else if (r >= 4.2) energy = 3;
+  else if (r >= 3.8) energy = 2;
+  else if (r > 0) energy = 1;
+
+  // Energy level label
+  let energyLevel = [];
+  if (r >= 4.7) energyLevel = ["rageface"];
+  else if (r >= 4.5) energyLevel = ["high-octane"];
+  else if (r >= 4.2) energyLevel = ["building"];
+  else if (r >= 3.8) energyLevel = ["steady-groove"];
+  else if (r > 0) energyLevel = ["low-and-slow"];
+
+  // Style from jam-chart count
+  let style = [];
+  if (jc >= 5) style = ["type-ii-heavy", "segue-fest"];
+  else if (jc >= 3) style = ["type-ii-heavy"];
+  else if (jc >= 2) style = ["segue-fest"];
+  else if (jc >= 1) style = ["groove-based"];
+
+  // Era-based vibe heuristics
+  let vibes = [];
+  if (year <= 1994) {
+    vibes = ["raging", "melodic"];
+    if (r >= 4.5) vibes.push("exploratory");
+  } else if (year <= 1996) {
+    vibes = ["raging", "celebratory"];
+    if (jc >= 3) vibes.push("exploratory");
+  } else if (year <= 1998) {
+    vibes = ["funky", "dark", "exploratory"];
+  } else if (year <= 2000) {
+    vibes = ["blissful", "exploratory", "celebratory"];
+  } else if (year <= 2004) {
+    vibes = ["dark", "exploratory", "raging"];
+  } else if (year <= 2012) {
+    vibes = ["exploratory", "blissful"];
+    if (r >= 4.5) vibes.push("raging");
+  } else if (year <= 2018) {
+    vibes = ["exploratory", "blissful", "melodic"];
+    if (r >= 4.5) vibes.push("raging");
+  } else {
+    vibes = ["exploratory", "blissful"];
+    if (jc >= 3) vibes.push("raging");
+  }
+
+  return { energy, energyLevel, style, vibes };
+}
+
 // ─── Curated Shows (always available) ───────────────────────────────────────
 const CURATED = [
   { date:"1993-02-20", venue:"Roxy Theatre", city:"Atlanta", state:"GA", rating:4.62, jamCharts:3, reviews:52, energy:5, vibes:["raging","melodic"], energyLevel:["rageface"], style:["power-rock","peak-and-soar"], features:["marathon-jams"], notableJams:["Split Open and Melt","YEM"], songs:["Split Open and Melt","You Enjoy Myself","Fluffhead","Maze","Possum"], description:"Early '93 rager. Raw energy and tight playing." },
@@ -226,32 +284,49 @@ function AiSearch({ shows, onResults, currentFilters }) {
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════
 export default function HelpingPhriendlyBook() {
-  const [liveShows, setLiveShows] = useState([]);
-  const [loadedYears, setLoadedYears] = useState(new Set());
-  // Phase 1: loading year/show metadata
-  const [autoLoading, setAutoLoading] = useState(true);
-  const [loadProgress, setLoadProgress] = useState("Warming up the freezer...");
+  const [allShows, setAllShows] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
-  // Phase 2: enriching setlists in background
+  // Live-API fallback state
+  const [liveMode, setLiveMode] = useState(false);
+  const [loadProgress, setLoadProgress] = useState("");
+  const [loadedYears, setLoadedYears] = useState(new Set());
   const [enriching, setEnriching] = useState(false);
   const [enrichDone, setEnrichDone] = useState(0);
   const [enrichTotal, setEnrichTotal] = useState(0);
   const loadStarted = useRef(false);
 
-  const TOTAL_YEARS = 44; // 1983-2026 inclusive
+  const TOTAL_YEARS = 44;
 
   useEffect(() => {
     if (loadStarted.current) return;
     loadStarted.current = true;
 
     const run = async () => {
-      // ── Phase 1: load all show metadata ──────────────────────────────────
+      // ── Fast path: try pre-built static JSON ──────────────────────────────
+      try {
+        const resp = await fetch("/data/shows.json");
+        if (resp.ok) {
+          const shows = await resp.json();
+          if (Array.isArray(shows) && shows.length > 0) {
+            setAllShows(shows);
+            setLoading(false);
+            return; // done — instant load
+          }
+        }
+      } catch {}
+
+      // ── Slow fallback: live API loading ────────────────────────────────────
+      setLiveMode(true);
+      setLoadProgress("Warming up the freezer...");
+
       const allYears = [];
       for (let y = 1983; y <= 2026; y++) allYears.push(y);
 
-      const allLoadedShows = []; // keep a local copy for phase 2
+      const allLoadedShows = [];
       let failCount = 0;
       const YEAR_BATCH = 5;
+      const curatedDates = new Set(CURATED.map(s => s.date));
 
       for (let i = 0; i < allYears.length; i += YEAR_BATCH) {
         const batch = allYears.slice(i, i + YEAR_BATCH);
@@ -262,13 +337,18 @@ export default function HelpingPhriendlyBook() {
             const resp = await fetch(`/api/shows?year=${y}`);
             const data = await resp.json();
             if (data.error) return { year: y, shows: [] };
-            return { year: y, shows: (data.shows || []).map(s => ({
-              date: s.date, venue: s.venue, city: s.city, state: s.state,
-              era: getEra(s.date), rating: s.rating, reviews: s.reviews,
-              jamCharts: 0, energy: 0, vibes: [], energyLevel: [], style: [],
-              features: (s.date?.includes("-10-31") ? ["halloween"] : []).concat(s.date?.includes("-12-31") ? ["nye"] : []),
-              notableJams: [], songs: [], description: "", source: "live",
-            }))};
+            return { year: y, shows: (data.shows || []).map(s => {
+              const meta = deriveShowMetadata(s.date, parseFloat(s.rating) || 0, 0);
+              return {
+                date: s.date, venue: s.venue, city: s.city, state: s.state,
+                era: getEra(s.date), rating: parseFloat(s.rating) || 0, reviews: s.reviews,
+                jamCharts: 0,
+                energy: meta.energy, vibes: meta.vibes,
+                energyLevel: meta.energyLevel, style: meta.style,
+                features: (s.date?.includes("-10-31") ? ["halloween"] : []).concat(s.date?.includes("-12-31") ? ["nye"] : []),
+                notableJams: [], songs: [], description: "", source: "live",
+              };
+            })};
           } catch {
             failCount++;
             return { year: y, shows: [] };
@@ -278,19 +358,17 @@ export default function HelpingPhriendlyBook() {
         const batchShows = results.flatMap(r => r.shows);
         allLoadedShows.push(...batchShows);
 
-        setLiveShows(prev => {
-          const existing = new Set(prev.map(s => s.date));
-          return [...prev, ...batchShows.filter(s => !existing.has(s.date))];
-        });
+        // Merge with curated shows
+        const merged = [...CURATED];
+        allLoadedShows.forEach(ls => { if (!curatedDates.has(ls.date)) merged.push(ls); });
+        setAllShows(merged);
         setLoadedYears(prev => new Set([...prev, ...results.map(r => r.year)]));
       }
 
       if (failCount > 0) setLoadError(`${failCount} year(s) failed to load.`);
-      setAutoLoading(false);
+      setLoading(false);
 
-      // ── Phase 2: enrich all live shows with setlist data ──────────────────
-      const curatedDates = new Set(CURATED.map(s => s.date));
-      // Sort by rating desc so the best shows get setlists first
+      // ── Enrich with setlist data in background ─────────────────────────────
       const toEnrich = allLoadedShows
         .filter(s => !curatedDates.has(s.date))
         .sort((a, b) => (b.rating || 0) - (a.rating || 0));
@@ -312,19 +390,24 @@ export default function HelpingPhriendlyBook() {
             const songNames = [...new Set(data.songs.map(s => s.song).filter(Boolean))];
             const jc = data.songs.filter(s => s.isjamchart === "1");
             const notableJams = jc.map(s => s.song + (s.jamchart_description ? ` — ${s.jamchart_description.slice(0,60)}` : ""));
+            const meta = deriveShowMetadata(show.date, show.rating, jc.length);
             return {
               date: show.date,
               songs: songNames,
               jamCharts: jc.length,
               notableJams,
               features: [...show.features, ...(jc.length >= 4 ? ["marathon-jams"] : [])],
+              energy: meta.energy,
+              energyLevel: meta.energyLevel,
+              style: meta.style,
+              vibes: meta.vibes,
             };
           } catch { return null; }
         }));
 
         const valid = enriched.filter(Boolean);
         if (valid.length) {
-          setLiveShows(prev => {
+          setAllShows(prev => {
             const updated = [...prev];
             valid.forEach(es => {
               const idx = updated.findIndex(s => s.date === es.date);
@@ -334,7 +417,6 @@ export default function HelpingPhriendlyBook() {
           });
         }
 
-        // Polite rate-limiting
         await new Promise(r => setTimeout(r, 100));
       }
 
@@ -344,13 +426,6 @@ export default function HelpingPhriendlyBook() {
 
     run();
   }, []);
-
-  const allShows = useMemo(() => {
-    const curatedDates = new Set(CURATED.map(s => s.date));
-    const combined = [...CURATED];
-    liveShows.forEach(ls => { if (!curatedDates.has(ls.date)) combined.push(ls); });
-    return combined;
-  }, [liveShows]);
 
   const [selectedEras, setSelectedEras] = useState([]);
   const [selectedVibes, setSelectedVibes] = useState([]);
@@ -409,8 +484,8 @@ export default function HelpingPhriendlyBook() {
           <p style={{ color:"#888", fontSize:12, marginTop:6 }}>{allShows.length} shows loaded · Powered by Phish.net API</p>
         </div>
 
-        {/* Phase 1: Year loading progress */}
-        {autoLoading && (
+        {/* Loading progress (only shown during live API fallback) */}
+        {loading && liveMode && (
           <div style={{ marginBottom:16, padding:14, background:"#111122", border:"1px solid #1e1e30", borderRadius:10 }}>
             <div style={{ display:"flex", alignItems:"center", gap:12 }}>
               <div style={{ width:20, height:20, border:"3px solid #e8a84933", borderTopColor:"#e8a849", borderRadius:"50%", flexShrink:0, animation:"spin 0.8s linear infinite" }} />
@@ -426,8 +501,18 @@ export default function HelpingPhriendlyBook() {
           </div>
         )}
 
-        {/* Phase 2: Setlist enrichment (background, non-blocking) */}
-        {!autoLoading && enriching && (
+        {/* Loading spinner for static JSON */}
+        {loading && !liveMode && (
+          <div style={{ marginBottom:16, padding:14, background:"#111122", border:"1px solid #1e1e30", borderRadius:10 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+              <div style={{ width:20, height:20, border:"3px solid #e8a84933", borderTopColor:"#e8a849", borderRadius:"50%", flexShrink:0, animation:"spin 0.8s linear infinite" }} />
+              <div style={{ fontSize:13, color:"#e8a849", fontWeight:600 }}>Loading show database...</div>
+            </div>
+          </div>
+        )}
+
+        {/* Setlist enrichment (background, only during live API fallback) */}
+        {!loading && enriching && (
           <div style={{ marginBottom:16, padding:12, background:"#111122", border:"1px solid #1e1e30", borderRadius:10 }}>
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
               <div style={{ width:14, height:14, border:"2px solid #4ecdc433", borderTopColor:"#4ecdc4", borderRadius:"50%", flexShrink:0, animation:"spin 0.8s linear infinite" }} />
